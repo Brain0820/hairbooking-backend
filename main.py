@@ -44,7 +44,12 @@ def init_db():
     cur.close()
     conn.close()
 
-init_db()
+
+if DATABASE_URL:
+    init_db()
+else:
+    print("DATABASE_URL not set, skip init_db")
+
 
 # ===== API Model =====
 class Reservation(BaseModel):
