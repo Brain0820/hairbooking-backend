@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime, timedelta
@@ -55,115 +55,9 @@ class Reservation(BaseModel):
     date: str
     time: str
 
-# ===== Debug =====
-@app.get("/_debug/db")
-def debug_db():
-    return {
-        "DATABASE_URL_EXISTS": DATABASE_URL is not None,
-        "DATABASE_URL_PREFIX": DATABASE_URL[:20] if DATABASE_URL else None,
-        "DB_TYPE": "postgresql" if DATABASE_URL else "sqlite"
-    }
-
-# ======================================================
-# ✅ 預約規則設定（你指定的）
-# ======================================================
-
-AVAILABLE_DATES = [
-    "2026-04-24", "2026-04-26", "2026-04-29",
-    "2026-05-01", "2026-05-02", "2026-05-06",
-    "2026-05-08", "2026-05-09", "2026-05-10",
-    "2026-05-13", "2026-05-15", "2026-05-16",
-    "2026-05-17", "2026-05-20", "2026-05-22",
-    "2026-05-23", "2026-05-24", "2026-05-27",
-    "2026-05-29", "2026-05-30"
-]
-
-SPECIAL_TIME_RULES = {
-    "2026-04-24": ("14:00", "18:00"),
-    "2026-05-02": ("13:00", "17:00"),
-    "2026-05-16": ("13:00", "17:00"),
-    "2026-05-30": ("13:00", "17:00"),
-}
-
-DEFAULT_START = "13:00"
-DEFAULT_END = "18:00"
-
-WEEKDAY_MAP = ["一", "二", "三", "四", "五", "六", "日"]
-
-# ======================================================
-# ✅ 共用工具函式
-# ======================================================
-
-def get_reservation_count_by_date(date_str: str):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT time, COUNT(*)
-        FROM reservations
-        WHERE date = %s
-        GROUP BY time
-    """, (date_str,))
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return {time: count for time, count in rows}
-
-def generate_times(start_str, end_str):
-    start = datetime.strptime(start_str, "%H:%M")
-    end = datetime.strptime(end_str, "%H:%M")
-    times = []
-    current = start
-    while current < end:
-        times.append(current.strftime("%H:%M"))
-        current += timedelta(minutes=20)
-    return times
-
-def format_date_label(date_str: str):
-    d = datetime.strptime(date_str, "%Y-%m-%d")
-    md = f"{d.month}月{d.day}日"
-    md_padded = md.ljust(6, "　")  # 全形空白對齊
-    weekday = WEEKDAY_MAP[d.weekday()]
-    return f"{md_padded}（{weekday}）"
-
-# ======================================================
-# ✅ API：取得可預約日期
-# ======================================================
-
-@app.get("/available-dates")
-def available_dates():
-    results = []
-
-    for d in AVAILABLE_DATES:
-        start, end = SPECIAL_TIME_RULES.get(d, (DEFAULT_START, DEFAULT_END))
-        all_times = generate_times(start, end)
-        counts = get_reservation_count_by_date(d)
-
-        if all(counts.get(t, 0) >= 2 for t in all_times):
-            continue  # 整天滿，不回傳
-
-        results.append({
-            "value": d,
-            "label": format_date_label(d)
-        })
-
-    return results
-
-# ======================================================
-# ✅ API：取得某日可預約時間
-# ======================================================
-
-@app.get("/available-times")
-def available_times(date: str):
-    start, end = SPECIAL_TIME_RULES.get(date, (DEFAULT_START, DEFAULT_END))
-    all_times = generate_times(start, end)
-    counts = get_reservation_count_by_date(date)
-
-    return [t for t in all_times if counts.get(t, 0) < 2]
-
 # ======================================================
 # ✅ 新增預約
 # ======================================================
-
 @app.post("/reserve")
 def reserve(r: Reservation):
     conn = get_db()
@@ -192,25 +86,42 @@ def reserve(r: Reservation):
     return {"message": "預約成功"}
 
 # ======================================================
-# ✅ 後台
+# ✅ 後台：刪除單筆預約（作法 1）
 # ======================================================
+@app.post("/admin/delete/{reservation_id}")
+def delete_reservation(reservation_id: int):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM reservations WHERE id = %s", (reservation_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return RedirectResponse(url="/admin", status_code=303)
 
+# ======================================================
+# ✅ 後台（先日期 → 再時間 → 正序）
+# ======================================================
 @app.get("/admin", response_class=HTMLResponse)
 def admin():
     conn = get_db()
     cur = conn.cursor()
+
+    # ✅ 含 id + 正確排序
     cur.execute("""
-        SELECT date, time, name, phone, pay_code
+        SELECT id, date, time, name, phone, pay_code
         FROM reservations
-        ORDER BY date, time, created_at
+        ORDER BY date ASC, time ASC, created_at ASC
     """)
     rows = cur.fetchall()
     cur.close()
     conn.close()
 
+    # 按 (date, time) 分組
     data = {}
-    for date, time, name, phone, code in rows:
-        data.setdefault((date, time), []).append((name, phone, code))
+    for rid, date, time, name, phone, code in rows:
+        data.setdefault((date, time), []).append(
+            {"id": rid, "name": name, "phone": phone, "code": code}
+        )
 
     html = """
     <html><head><meta charset="utf-8">
@@ -220,16 +131,33 @@ def admin():
     table { border-collapse: collapse; width: 100%; }
     th, td { border: 1px solid #000; padding: 8px; vertical-align: top; }
     th { background-color: #f0f0f0; }
+    form { display:inline; }
+    button { margin-left: 8px; }
     </style></head><body>
-    <h2>預約狀態</h2><table>
-    <tr><th>日期</th><th>時間</th><th>人數</th><th>名單</th></tr>
+    <h2>預約狀態</h2>
+    <table>
+      <tr>
+        <th>日期</th>
+        <th>時間</th>
+        <th>人數</th>
+        <th>名單</th>
+      </tr>
     """
 
     for (date, time), people in data.items():
         html += f"<tr><td>{date}</td><td>{time}</td>"
         html += f"<td>{len(people)} / 2</td><td>"
-        for i, (n, p, c) in enumerate(people, 1):
-            html += f"{i}. {n}｜{p}｜{c}<br>"
+
+        for idx, p in enumerate(people, 1):
+            html += f"""
+            {idx}. {p['name']}｜{p['phone']}｜{p['code']}
+            <form method="post" action="/admin/delete/{p['id']}"
+                  onsubmit="return confirm('確定要刪除這筆預約嗎？');">
+                <button type="submit">刪除</button>
+            </form>
+            <br>
+            """
+
         html += "</td></tr>"
 
     html += "</table></body></html>"
