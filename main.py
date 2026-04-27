@@ -121,6 +121,7 @@ def generate_times(start_str, end_str):
 def available_dates():
     now = datetime.now(TZ)
     today_str = now.strftime("%Y-%m-%d")
+    limit_time_str = (now + timedelta(minutes=60)).strftime("%H:%M")
 
     results = []
     for d in AVAILABLE_DATES:
@@ -131,8 +132,7 @@ def available_dates():
         all_times = generate_times(start, end)
 
         if d == today_str:
-            current_time_str = now.strftime("%H:%M")
-            all_times = [t for t in all_times if t > current_time_str]
+            all_times = [t for t in all_times if t > limit_time_str]
 
             if not all_times:
                 continue
@@ -151,13 +151,13 @@ def available_dates():
 def available_times(date: str):
     now = datetime.now(TZ)
     today_str = now.strftime("%Y-%m-%d")
+    limit_time_str = (now + timedelta(minutes=60)).strftime("%H:%M")
 
     start, end = SPECIAL_TIME_RULES.get(date, (DEFAULT_START, DEFAULT_END))
     all_times = generate_times(start, end)
 
     if date == today_str:
-        current_time_str = now.strftime("%H:%M")
-        all_times = [t for t in all_times if t > current_time_str]
+        all_times = [t for t in all_times if t > limit_time_str]
 
     counts = get_reservation_count_by_date(date)
     return [t for t in all_times if counts.get(t, 0) < 1]
@@ -255,7 +255,6 @@ def admin():
         html += f"<tr><td>{date}</td><td>{time}</td>"
         html += f"<td>{len(people)} / 1</td><td>"
 
-        
         for idx, p in enumerate(people, 1):
             html += f"""
             {idx}. {p['name']}｜{p['phone']}｜{p['code']}
@@ -264,7 +263,6 @@ def admin():
                 <button type="submit">刪除</button>
             </form><br>
             """
-
 
         html += "</td></tr>"
 
